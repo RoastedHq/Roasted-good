@@ -1,1 +1,1 @@
-{"functions":{"source":"functions"}}
+{"firestore":{"indexes":"firestore.indexes.json"},"functions":{"source":"functions"}}

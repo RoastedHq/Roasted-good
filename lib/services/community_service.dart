@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../models/community_post.dart';
 import '../models/post_comment.dart';
+import 'coffee_filter.dart';
 
 /// Point values for the community leaderboard.
 abstract final class CommunityPoints {
@@ -11,6 +12,27 @@ abstract final class CommunityPoints {
   static const perLike = 2;
   static const perComment = 5;
 }
+
+/// Outcome of creating a post, so the UI can explain each case.
+enum PostResult {
+  /// Posted and visible in the feed.
+  posted,
+
+  /// Held for admin review (not coffee-related) — visible only to
+  /// its author until approved.
+  heldForReview,
+
+  /// The author already posted the daily maximum.
+  dailyLimit,
+
+  /// Network/storage failure.
+  failed,
+}
+
+/// Maximum posts per user per calendar day (device-local day).
+/// Admins are exempt. The Cloud Function enforces this
+/// authoritatively; the client check is for instant feedback.
+const maxPostsPerDay = 3;
 
 /// Best-effort Firestore + Storage backend for the community forum.
 /// Reads are a live stream; writes swallow errors so offline
@@ -31,8 +53,11 @@ class CommunityService {
   DocumentReference<Map<String, dynamic>> _rank(String uid) =>
       _db.collection('leaderboard').doc(uid);
 
-  /// Live feed, newest first.
-  Stream<List<CommunityPost>> watchPosts({int limit = 50}) {
+  /// Live feed, newest first. Only approved posts are shown, plus
+  /// the viewer's own held posts (pending or rejected) so authors
+  /// always see what happened to their post. Posts written before
+  /// moderation existed have no status and read as approved.
+  Stream<List<CommunityPost>> watchPosts({int limit = 50, String? uid}) {
     try {
       return _posts
           .orderBy('createdAt', descending: true)
@@ -41,13 +66,89 @@ class CommunityService {
           .map((snap) => [
                 for (final doc in snap.docs)
                   CommunityPost.fromMap(doc.data(), doc.id),
-              ]);
+              ]
+                  .where((post) {
+                    if (post.status == 'approved') return true;
+                    return uid != null &&
+                        post.userId == uid &&
+                        (post.isPending || post.isRejected);
+                  })
+                  .toList());
     } catch (_) {
       return Stream.value(const []);
     }
   }
 
-  Future<bool> createPost({
+  /// True when [uid] has a document in the `admins` collection.
+  /// Admins skip the coffee filter and the daily limit, and see the
+  /// moderation screen.
+  Future<bool> isAdmin(String uid) async {
+    try {
+      final doc = await _db.collection('admins').doc(uid).get();
+      return doc.exists;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Posts awaiting admin review, newest first. Client-side filter
+  /// so no composite index is needed.
+  Stream<List<CommunityPost>> watchPendingPosts({int limit = 50}) {
+    try {
+      return _posts
+          .orderBy('createdAt', descending: true)
+          .limit(limit)
+          .snapshots()
+          .map((snap) => [
+                for (final doc in snap.docs)
+                  CommunityPost.fromMap(doc.data(), doc.id),
+              ].where((post) => post.isPending).toList());
+    } catch (_) {
+      return Stream.value(const []);
+    }
+  }
+
+  /// Live count of posts awaiting review, for the moderation badge.
+  Stream<int> watchPendingCount() =>
+      watchPendingPosts().map((posts) => posts.length);
+
+  /// Approve or reject a held post. Requires the Firestore rules
+  /// admin override (see the rules snippet shipped with this feature).
+  Future<bool> moderatePost(String postId, bool approve) async {
+    try {
+      await _posts.doc(postId).update({
+        'status': approve ? 'approved' : 'rejected',
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// True when the user already posted [maxPostsPerDay] times today
+  /// (device-local calendar day). All of today's posts count,
+  /// including held and rejected ones, so the moderation queue can't
+  /// be spammed. On query failure (e.g. the composite index isn't
+  /// deployed yet) returns false — the Cloud Function enforces the
+  /// limit authoritatively, so posting must never break here.
+  Future<bool> _atDailyLimit(String userId) async {
+    try {
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final snap = await _posts
+          .where('userId', isEqualTo: userId)
+          .where('createdAt',
+              isGreaterThanOrEqualTo: Timestamp.fromDate(todayStart))
+          .orderBy('createdAt', descending: true)
+          .limit(maxPostsPerDay)
+          .get();
+      return snap.docs.length >= maxPostsPerDay;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<PostResult> createPost({
     required String userId,
     required String userName,
     required String kind,
@@ -55,12 +156,19 @@ class CommunityService {
     XFile? image,
   }) async {
     try {
+      final admin = await isAdmin(userId);
+      if (!admin && await _atDailyLimit(userId)) {
+        return PostResult.dailyLimit;
+      }
       final doc = _posts.doc();
       String? imageUrl;
       if (image != null) {
         imageUrl = await _uploadImage(doc.id, image);
-        if (imageUrl == null) return false;
+        if (imageUrl == null) return PostResult.failed;
       }
+      final status = admin
+          ? 'approved'
+          : (isCoffeeRelated(body) ? 'approved' : 'pending');
       await doc.set(CommunityPost(
         id: '',
         userId: userId,
@@ -69,6 +177,7 @@ class CommunityService {
         body: body.trim(),
         imageUrl: imageUrl,
         createdAt: DateTime.now(),
+        status: status,
       ).toMap());
       await _awardPoints(
         uid: userId,
@@ -76,9 +185,9 @@ class CommunityService {
         points: CommunityPoints.perPost,
         postDelta: 1,
       );
-      return true;
+      return status == 'pending' ? PostResult.heldForReview : PostResult.posted;
     } catch (_) {
-      return false;
+      return PostResult.failed;
     }
   }
 

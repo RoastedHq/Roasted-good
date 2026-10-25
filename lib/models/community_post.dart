@@ -14,6 +14,7 @@ class CommunityPost {
     this.likeCount = 0,
     this.likedBy = const [],
     this.commentCount = 0,
+    this.status = 'approved',
   });
 
   final String id;
@@ -33,6 +34,16 @@ class CommunityPost {
   /// Denormalized comment count, maintained by the service.
   final int commentCount;
 
+  /// Moderation state: 'approved' (visible in the feed), 'pending'
+  /// (held for admin review — visible only to its author), or
+  /// 'rejected' (hidden, daily-limit or admin refusal — also only
+  /// visible to its author). Posts written before moderation existed
+  /// have no status field and read as 'approved'.
+  final String status;
+
+  bool get isPending => status == 'pending';
+  bool get isRejected => status == 'rejected';
+
   bool likedByUser(String? uid) => uid != null && likedBy.contains(uid);
 
   Map<String, dynamic> toMap() => {
@@ -45,6 +56,7 @@ class CommunityPost {
         'likeCount': likeCount,
         'likedBy': likedBy,
         'commentCount': commentCount,
+        'status': status,
       };
 
   factory CommunityPost.fromMap(Map<String, dynamic> map, String id) {
@@ -64,6 +76,7 @@ class CommunityPost {
         for (final u in (map['likedBy'] as List? ?? [])) u as String,
       ],
       commentCount: (map['commentCount'] ?? 0) as int,
+      status: (map['status'] ?? 'approved') as String,
     );
   }
 }

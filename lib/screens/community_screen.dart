@@ -11,6 +11,7 @@ import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/profile_widgets.dart';
 import 'leaderboard_screen.dart';
+import 'moderation_screen.dart';
 
 /// Community: a minimalist forum for brew notes, tastings,
 /// questions and coffee chat. Backed by the shared `posts`
@@ -36,6 +37,8 @@ class CommunityScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Community'),
         actions: [
+          if (svc != null && state.uid != null)
+            _ModerationAction(service: svc, uid: state.uid),
           if (svc != null)
             IconButton(
               tooltip: 'Leaderboard',
@@ -72,7 +75,7 @@ class CommunityScreen extends StatelessWidget {
                 ],
               )
             : StreamBuilder<List<CommunityPost>>(
-                stream: svc.watchPosts(),
+                stream: svc.watchPosts(uid: state.uid),
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const Center(child: CircularProgressIndicator());
@@ -142,7 +145,7 @@ class CommunityScreen extends StatelessWidget {
         ),
         child: _ComposeForm(
           onPost: (kind, body, image) async {
-            final ok = await service.createPost(
+            final result = await service.createPost(
               userId: uid,
               userName: name,
               kind: kind,
@@ -151,18 +154,77 @@ class CommunityScreen extends StatelessWidget {
             );
             if (sheetContext.mounted) {
               Navigator.of(sheetContext).pop();
-              if (!ok && context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                        'Could not post right now — check your connection.'),
-                  ),
-                );
+              if (context.mounted) {
+                switch (result) {
+                  case PostResult.posted:
+                    break;
+                  case PostResult.heldForReview:
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                            'Your post is awaiting review — it will appear once approved.'),
+                      ),
+                    );
+                  case PostResult.dailyLimit:
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                            'You have reached 3 posts for today — come back tomorrow!'),
+                      ),
+                    );
+                  case PostResult.failed:
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                            'Could not post right now — check your connection.'),
+                      ),
+                    );
+                }
               }
             }
           },
         ),
       ),
+    );
+  }
+}
+
+/// AppBar moderation entry: visible only to admins, with a badge
+/// showing how many posts await review.
+class _ModerationAction extends StatelessWidget {
+  const _ModerationAction({required this.service, required this.uid});
+
+  final CommunityService service;
+  final String? uid;
+
+  @override
+  Widget build(BuildContext context) {
+    final id = uid;
+    if (id == null) return const SizedBox.shrink();
+    return FutureBuilder<bool>(
+      future: service.isAdmin(id),
+      builder: (context, adminSnap) {
+        if (adminSnap.data != true) return const SizedBox.shrink();
+        return StreamBuilder<int>(
+          stream: service.watchPendingCount(),
+          builder: (context, countSnap) {
+            final count = countSnap.data ?? 0;
+            return Badge(
+              isLabelVisible: count > 0,
+              label: Text('$count'),
+              child: IconButton(
+                tooltip: 'Moderation',
+                icon: const Icon(Icons.shield_outlined),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ModerationScreen(service: service),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -220,6 +282,25 @@ class _PostCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              // Authors see what happened to their own held posts.
+              if ((post.isPending || post.isRejected) &&
+                  post.userId == uid) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: p.surfaceVariant.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    post.isPending ? 'Pending approval' : 'Not approved',
+                    style: theme.textTheme.labelSmall,
+                  ),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 10),
