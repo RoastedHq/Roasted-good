@@ -15,7 +15,7 @@ import '../widgets/bean_detail_sheet.dart';
 
 /// Coffee shops and roasteries on a real interactive map
 /// (Esri basemaps — free, no API key),
-/// centered on Gatineau–Ottawa. The tile style follows the app theme.
+/// centered on Toronto for launch step 1. The tile style follows the app theme.
 ///
 /// Esri basemaps — no API key required.
 /// Free keyless map tiles (Esri). Note the {z}/{y}/{x} order — Esri puts
@@ -115,8 +115,9 @@ class ShopsScreen extends StatefulWidget {
 class _ShopsScreenState extends State<ShopsScreen> {
   final MapController _mapController = MapController();
 
-  /// Gatineau–Ottawa midpoint, covering both cities.
-  static const LatLng _regionCenter = LatLng(45.431, -75.72);
+  /// Toronto centre — launch step 1 serves Toronto only, so the map
+  /// opens where the shops actually are.
+  static const LatLng _regionCenter = LatLng(43.6532, -79.3832);
 
   /// Real GPS position once location permission is granted; null until then.
   Position? _position;
@@ -246,10 +247,11 @@ class _ShopsScreenState extends State<ShopsScreen> {
   }
 
   /// Shop list: when searching, a flat distance-sorted result list;
-  /// otherwise region sections (Gatineau / Ottawa / Toronto) ordered by
-  /// how close each region's nearest shop is, with shops nearest-first
-  /// inside each region. Distances come from the real GPS position when
-  /// available, otherwise the Gatineau–Ottawa midpoint.
+  /// otherwise region sections (only launch regions have shops —
+  /// Toronto for step 1) ordered by how close each region's nearest
+  /// shop is, with shops nearest-first inside each region. Distances
+  /// come from the real GPS position when available, otherwise the
+  /// Toronto centre.
   Widget _buildShopList(
     BuildContext context,
     ThemeData theme,

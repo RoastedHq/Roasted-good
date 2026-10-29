@@ -121,7 +121,12 @@ class AppState extends ChangeNotifier {
   // ——— Catalogue ———
 
   List<CoffeeBean> get beans => List.unmodifiable(_beans);
-  List<CoffeeShop> get shops => List.unmodifiable(_shops);
+  /// Shops in the launch regions only (see [launchShopRegions]):
+  /// step 1 is Toronto only, so Ottawa/Gatineau shops are hidden
+  /// everywhere until step 2 re-enables them.
+  List<CoffeeShop> get shops => List.unmodifiable(
+        _shops.where((s) => launchShopRegions.contains(s.region)),
+      );
 
   CoffeeBean? beanFor(String id) {
     for (final bean in _beans) {
