@@ -53,7 +53,56 @@ workflows:
           # otherwise be picked up again and fail signing with "no valid certificates"
           rm -f ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision
           rm -f ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
-          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          # Two-App-ID trap (Oct 29): fetch matches BOTH App IDs (correct
+          # com.beanquest.coffeeBeans and bogus com.beanquest.coffeeBeans.5KF96D48DG).
+          # With no ACTIVE profile for either, it creates the bogus one first under a
+          # timestamp name, then fails 409 creating the same-named correct one.
+          # A retry gets a fresh timestamp name, and the bogus profile now exists,
+          # so the retry can create the correct one instead of colliding.
+          if ! app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create; then
+            echo "First fetch failed (likely the 409 duplicate-name trap). Retrying once..."
+            app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          fi
+      - name: Keep only the correct provisioning profile
+        script: |
+          # Fetch may download BOTH profiles: the correct one for
+          # com.beanquest.coffeeBeans and the bogus one for
+          # com.beanquest.coffeeBeans.5KF96D48DG. Downstream steps pick the first
+          # .mobileprovision they find, so a wrong first file would fail the archive
+          # even after a successful fetch. Delete every profile that is not for the
+          # correct App ID, in both folders the pipeline reads, and fail fast if
+          # no correct profile survived.
+          for DIR in ~/Library/MobileDevice/Provisioning\ Profiles ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles; do
+            mkdir -p "$DIR"
+            for PROFILE in "$DIR"/*.mobileprovision; do
+              [ -e "$PROFILE" ] || continue
+              if ! security cms -D -i "$PROFILE" -o /tmp/check_profile.plist 2>/dev/null; then
+                echo "Could not decode $PROFILE, deleting it"
+                rm -f "$PROFILE"
+                continue
+              fi
+              APP_ID=$(plutil -extract Entitlements.application-identifier raw /tmp/check_profile.plist 2>/dev/null || echo "")
+              NAME=$(plutil -extract Name raw /tmp/check_profile.plist 2>/dev/null || echo "")
+              if [ "$APP_ID" = "5KF96D48DG.com.beanquest.coffeeBeans" ]; then
+                echo "Keeping correct profile: $NAME ($APP_ID)"
+              else
+                echo "Removing wrong-App-ID profile: $NAME ($APP_ID)"
+                rm -f "$PROFILE"
+              fi
+            done
+            # If more than one correct profile remains, keep only the newest so
+            # the downstream head -1 lookups are deterministic.
+            if [ "$(ls "$DIR"/*.mobileprovision 2>/dev/null | wc -l)" -gt 1 ]; then
+              echo "Multiple correct profiles in $DIR, keeping newest only"
+              ls -t "$DIR"/*.mobileprovision | tail -n +2 | while IFS= read -r OLD; do rm -f "$OLD"; done
+            fi
+          done
+          if ! ls ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision >/dev/null 2>&1; then
+            echo "ERROR: no provisioning profile for com.beanquest.coffeeBeans was downloaded. Check the Fetch signing files log."
+            exit 1
+          fi
+          echo "Correct profile ready:"
+          ls ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
       - name: Set up signing certificate
         script: |
           # Decode our RSA private key and verify it's valid
