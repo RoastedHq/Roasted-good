@@ -120,7 +120,24 @@ class AppState extends ChangeNotifier {
 
   // ——— Catalogue ———
 
-  List<CoffeeBean> get beans => List.unmodifiable(_beans);
+  /// Beans served in the launch regions only, parallel to [shops]:
+  /// a bean is hidden when its "where to buy" shop sits in a region
+  /// outside [launchShopRegions] (Ottawa/Gatineau for launch step 1).
+  /// Beans with no matching shop stay visible. The data stays in the
+  /// catalogue, so step 2 re-enables them by extending the allowlist.
+  /// Note: [beanFor] still resolves from the full list, so existing
+  /// tastings, wishlist entries, and barcode scans keep working.
+  List<CoffeeBean> get beans => List.unmodifiable(
+        _beans.where((bean) {
+          final whereToBuy = bean.whereToBuy?.toLowerCase();
+          if (whereToBuy == null || whereToBuy.isEmpty) return true;
+          final shop = _shops
+              .where((s) => s.name.toLowerCase() == whereToBuy)
+              .firstOrNull;
+          if (shop == null) return true;
+          return launchShopRegions.contains(shop.region);
+        }),
+      );
   /// Shops in the launch regions only (see [launchShopRegions]):
   /// step 1 is Toronto only, so Ottawa/Gatineau shops are hidden
   /// everywhere until step 2 re-enables them.
